@@ -46,3 +46,9 @@ Running the `:FixMissingImports` command then prompts me like so:
 
 image::images/fixmenu.png[]
 
+
+== Prerequisites
+
+* The plugin currently assumes you're using maven.
+* In order to propertly extract the JDK version from your `pom.xml` file you need to have `xmlstarlet` installed.
+

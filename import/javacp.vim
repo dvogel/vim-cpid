@@ -194,7 +194,7 @@ def GetBufferIndexNames(): list<string>
         add(indexNames, "jdk" .. b:jdkVersion)
     elseif exists('b:pomXmlPath')
         add(indexNames, b:pomXmlPath)
-        add(indexNames, fnamemodify(b:pomXmlPath, ":p:h"))
+        add(indexNames, ProjectIndexName(b:pomXmlPath))
         var jdkIndexName: any = pomutil.FetchJdkVersion(b:pomXmlPath)
         if jdkIndexName != v:null
             add(indexNames, "jdk" .. jdkIndexName)
@@ -214,12 +214,13 @@ var declPat = '\(\W\|^\)class\s\+' .. classIdentPat .. '\(\s\|$\)'
 # members that often have all-caps names. e.g. LOGGER.
 var memberDeclPat = '\%(\W\|^\)\%(public\|private\|protected\)\?\%(\s\+final\)\?\%(\s\+\%(var\|char\|byte\|int\|long\|float\|double\|' .. classIdentPat .. '\)\)\s\+\(' .. classIdentPat .. '\)'
 
+var genericDeclPat = '^\s*\%(public\|private\|protected\)\s\+<\([A-Z]\)>\s.*'
+
 export def SelfTestCollectKnownClassNames(): void
     var memberDeclMatches = matchlist("protected final int DEFAULT_BATCH_SIZE = 1000L;", memberDeclPat)
     assert_equal("DEFAULT_BATCH_SIZE", memberDeclMatches[1])
 enddef
 
-# TODO: This needs to enumerate all of the classes in the current package.
 export def CollectKnownClassNames(lines: list<string>): list<string>
 	var knownClassNames = []
     var classMatch: any
@@ -261,6 +262,11 @@ export def CollectKnownClassNames(lines: list<string>): list<string>
         if memberDeclMatches != []
             add(knownClassNames, memberDeclMatches[1])
         endif
+
+        var genericDeclMatches = matchlist(ln, genericDeclPat)
+        if genericDeclMatches != []
+            add(knownClassNames, genericDeclMatches[1])
+        endif
 	endfor
 
     if exists("b:cpidPackageName")
@@ -292,8 +298,6 @@ export def CheckBuffer(): void
     endif
 
 	var lines = getline(1, '$')
-	# var usedClasses = CollectUsedClassNames(lines)
-	# var knownClasses = CollectKnownClassNames(lines)
     var usedClasses = b:cpidUsedClassNames
     var knownClasses = b:cpidKnownClassNames
     extend(knownClasses, preludeClasses)
@@ -382,9 +386,13 @@ export def FixMissingImports(): void
     FixFirstMissingImport(b:cpidClassesNeedingImport)
 enddef
 
+def ProjectIndexName(pomXmlPath: string): string
+    return fnamemodify(pomXmlPath, ":p:h")
+enddef
+
 export def ReindexProject(): void
     if has_key(b:, "pomXmlPath")
-        var projectPath = fnamemodify(b:pomXmlPath, ":p:h")
+        var projectPath = ProjectIndexName(b:pomXmlPath)
         DebugMsg(() => "Requesting reindexing of project path " .. projectPath)
         var resp = ch_evalexpr(channel, {
             "type": "ReindexProjectCmd",
