@@ -1,9 +1,12 @@
 vim9script
 
+import "./fileutil.vim"
+
 var pomJdkVersionCache = {}
 var classpathCache = {}
 var pomXmlJdkVersionPaths = [
     '/pom:project/pom:properties/pom:maven.compiler.source',
+    '/pom:project/pom:properties/pom:maven.compiler.release',
     '/pom:project/pom:properties/pom:java.version',
     '/pom:project/pom:build/pom:plugins//pom:plugin[./pom:artifactId/text()="maven-compiler-plugin"]/pom:configuration/pom:source',
     ]
@@ -22,9 +25,9 @@ export def ForgetPomJdkVersion(path: string): void
     endif
 enddef
 
-export def IdentifyPomJdkVersion(path: string): void
-    if has_key(pomJdkVersionCache, b:pomXmlPath)
-        return
+export def IdentifyPomJdkVersion(path: string): string
+    if has_key(pomJdkVersionCache, path)
+        return pomJdkVersionCache[path]
     endif
 
     for xmlpath in pomXmlJdkVersionPaths
@@ -32,9 +35,11 @@ export def IdentifyPomJdkVersion(path: string): void
         var versionText = trim(system(cmd))
         if len(versionText) > 0 && matchstr(versionText, '^[0-9]\+[.0-9]*$') != ""
             pomJdkVersionCache[path] = versionText
-            break
+            return pomJdkVersionCache[path]
         endif
     endfor
+
+    return ""
 enddef
 
 def ReadClasspathFromFile(filePath: string): string
@@ -77,14 +82,7 @@ enddef
 # Returns a string that is either a readable path ending in pom.xml or the
 # emptry string if no pom.xml file was found above the given path.
 export def FindPomXml(path: string): string
-    var prefix = path
-    while !filereadable(prefix .. "/pom.xml")
-        prefix = fnamemodify(prefix, ":h")
-        if prefix == "/"
-            return ""
-        endif
-    endwhile
-    return prefix .. "/pom.xml"
+    return fileutil.FindFileAbove("pom.xml", path)
 enddef
 
 export def PrintPomAttrs(path: string): void

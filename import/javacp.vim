@@ -1,6 +1,7 @@
 vim9script
 
 import "pomutil.vim"
+import "gradleutil.vim"
 
 var outstandingCpidRequests: dict<func> = {}
 var channel: channel
@@ -190,15 +191,30 @@ enddef
 def GetBufferIndexNames(): list<string>
     var indexNames = []
 
+    var jdkVersion: any = v:null
+
     if exists('b:jdkVersion')
-        add(indexNames, "jdk" .. b:jdkVersion)
-    elseif exists('b:pomXmlPath')
+        jdkVersion = b:jdkVersion
+    endif
+
+    # TODO: b:pomXmlPath and b:buildGradlePath should be collapsed into
+    # b:projectFilePath and b:projectFileType (enum of 'gradle' and 'maven')
+    if exists('b:pomXmlPath')
         add(indexNames, b:pomXmlPath)
         add(indexNames, ProjectIndexName(b:pomXmlPath))
-        var jdkIndexName: any = pomutil.FetchJdkVersion(b:pomXmlPath)
-        if jdkIndexName != v:null
-            add(indexNames, "jdk" .. jdkIndexName)
+        if jdkVersion == v:null
+            jdkVersion = pomutil.FetchJdkVersion(b:pomXmlPath)
         endif
+    elseif exists('b:buildGradlePath')
+        add(indexNames, b:buildGradlePath)
+        add(indexNames, ProjectIndexName(b:buildGradlePath))
+        if jdkVersion == v:null
+            jdkVersion = gradleutil.FetchJdkVersion(b:buildGradlePath)
+        endif
+    endif
+
+    if jdkVersion != v:null
+        add(indexNames, "jdk" .. jdkVersion)
     endif
 
     return indexNames
@@ -337,11 +353,13 @@ def FixFirstMissingImport(classNames: list<string>): void
     var rest = slice(classNames, 1)
 
     var indexNames = GetBufferIndexNames()
-    var resp = CpidSendSync("ClassQueryResponse", {
+    var reqObj = {
         type: "ClassMultiQuery",
         index_names: indexNames,
         class_name: cls,
-        })
+    }
+    DebugMsg(() => "Request object: " .. string(reqObj))
+    var resp = CpidSendSync("ClassQueryResponse", reqObj)
 
     if empty(resp)
         FixFirstMissingImport(rest)
@@ -386,36 +404,52 @@ export def FixMissingImports(): void
     FixFirstMissingImport(b:cpidClassesNeedingImport)
 enddef
 
-def ProjectIndexName(pomXmlPath: string): string
-    return fnamemodify(pomXmlPath, ":p:h")
+def ProjectIndexName(buildConfigPath: string): string
+    return fnamemodify(buildConfigPath, ":p:h")
 enddef
 
 export def ReindexProject(): void
+    var projectPath = ""
     if has_key(b:, "pomXmlPath")
-        var projectPath = ProjectIndexName(b:pomXmlPath)
-        DebugMsg(() => "Requesting reindexing of project path " .. projectPath)
-        var resp = ch_evalexpr(channel, {
-            "type": "ReindexProjectCmd",
-            index_name: projectPath,
-            archive_source: projectPath,
-            })
+        projectPath = ProjectIndexName(b:pomXmlPath)
+    elseif has_key(b:, "buildGradlePath")
+        projectPath = ProjectIndexName(b:buildGradlePath)
+    else
+        return
     endif
+
+    DebugMsg(() => "Requesting reindexing of project path " .. projectPath)
+    var resp = ch_evalexpr(channel, {
+        "type": "ReindexProjectCmd",
+        index_name: projectPath,
+        archive_source: projectPath,
+        })
 enddef
 
 export def ReindexClasspath(): void
-    if has_key(b:, "pomXmlPath")
-        var cpText = pomutil.FetchClasspath(b:pomXmlPath)
-        if cpText == v:null
-            echo "Cannot index classpath because it is still being generated."
-            return
-        endif
+    var cpText: any = v:null
+    var buildConfigPath: any = v:null
 
-        var resp = ch_evalexpr(channel, {
-            type: "ReindexClasspathCmd",
-            index_name: b:pomXmlPath,
-            archive_source: cpText,
-            })
+    if has_key(b:, "pomXmlPath")
+        buildConfigPath = b:pomXmlPath
+        cpText = pomutil.FetchClasspath(b:pomXmlPath)
+    elseif has_key(b:, "buildGradlePath")
+        cpText = gradleutil.FetchClasspath(b:buildGradlePath)
+        buildConfigPath = b:buildGradlePath
+    else
+        return
     endif
+
+    if cpText == v:null
+        echo "Cannot index classpath because it is still being generated."
+        return
+    endif
+
+    var resp = ch_evalexpr(channel, {
+        type: "ReindexClasspathCmd",
+        index_name: buildConfigPath,
+        archive_source: cpText,
+        })
 enddef
 
 export def UpdateBufferShadow(): void
@@ -440,6 +474,8 @@ export def RecvImportChoice(winid: number, packageName: string, className: strin
     var finalImportLine = FindFinalImport(lines)
     if finalImportLine > -1
         append(finalImportLine + 1, newLine)
+        UpdateBufferShadow()
+        CheckBuffer()
         return
     endif 
 
@@ -449,6 +485,8 @@ export def RecvImportChoice(winid: number, packageName: string, className: strin
         # arithmatic.
         append(packageDeclLine + 1, newLine)
         append(packageDeclLine + 1, "")
+        UpdateBufferShadow()
+        CheckBuffer()
         return
     endif
 
@@ -503,12 +541,33 @@ export def InitializeJavaBuffer(): void
         return
     endif
 
-    b:pomXmlPath = pomutil.FindPomXml(expand("%:p"))
-    if b:pomXmlPath != ""
-        pomutil.IdentifyPomJdkVersion(b:pomXmlPath)
-    elseif exists('b:jdkVersion')
-        # no-op
-    else
+    if !exists('b:jdkVersion')
+        var pomXmlPath = pomutil.FindPomXml(expand("%:p"))
+        DebugMsg(() => "pomXmlPath: " .. string(pomXmlPath))
+        if pomXmlPath != ""
+            var jdkVersion = pomutil.IdentifyPomJdkVersion(pomXmlPath)
+            if jdkVersion != ""
+                b:jdkVersion = jdkVersion
+            endif
+            b:pomXmlPath = pomXmlPath
+        endif
+    endif
+
+    if !exists('b:jdkVersion')
+        var buildGradlePath = gradleutil.FindBuildGradle(expand("%:p"))
+        DebugMsg(() => "buildGradlePath: " .. string(buildGradlePath))
+        if buildGradlePath != ""
+            var jdkVersion = gradleutil.IdentifyGradleJdkVersion(buildGradlePath)
+            if jdkVersion != ""
+                b:jdkVersion = jdkVersion
+            endif
+            b:buildGradlePath = buildGradlePath
+        endif
+    endif
+
+    if !exists('b:jdkVersion')
+        # If we haven't found a project build config file then we don't know
+        # enough to make cpid useful.
         return
     endif
 
